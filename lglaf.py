@@ -38,6 +38,8 @@ except ImportError:
 
 # Use Manufacturer key for KILO challenge/response
 USE_MFG_KEY = False
+# HELO command always sends BASE Protocol version
+BASE_PROTOCOL_VERSION = 0x1000001
 
 laf_error_codes = {
     0x80000000: "FAILED",
@@ -213,6 +215,7 @@ def make_exec_request(shell_command, rawshell):
 class Communication(object):
     def __init__(self):
         self.read_buffer = b''
+        self.protocol_version = 0
     def read(self, n, timeout=None):
         """Reads exactly n bytes."""
         need = n - len(self.read_buffer)
@@ -365,7 +368,8 @@ def try_hello(comm):
     # and otherwise something is wrong.
     HELLO_READ_TIMEOUT = 5000
 
-    hello_request = make_request(b'HELO', args=[b'\1\0\0\1'])
+    hello_proto_version = struct.pack("<I", BASE_PROTOCOL_VERSION)
+    hello_request = make_request(b'HELO', args=[hello_proto_version])
     comm.write(hello_request)
     data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
     if data[0:4] != b'HELO':
@@ -374,6 +378,8 @@ def try_hello(comm):
             try:
                 validate_message(data, ignore_crc=True)
                 size = struct.unpack_from('<I', data, 0x14)[0]
+                # Assign received protocol version
+                comm.protocol_version = struct.unpack_from('<I', data, 0x4)[0]
                 comm.read(size, timeout=HELLO_READ_TIMEOUT)
             except RuntimeError: pass
             # Flush read buffer
@@ -381,7 +387,6 @@ def try_hello(comm):
             data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
         # Just to be sure, send another HELO request.
         comm.call(hello_request)
-
 
 def detect_serial_path():
     try:
@@ -485,6 +490,7 @@ def main():
             challenge_response(comm, mode=2)
         if not args.skip_hello:
             try_hello(comm)
+            _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
             _logger.debug("Hello done, proceeding with commands")
         for command in get_commands(args.command):
             try:
