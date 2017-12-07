@@ -180,6 +180,18 @@ def make_request(cmd, args=[], body=b''):
     set_header(0x18, crc16(header))
     return bytes(header)
 
+
+def make_hdlc_request(body):
+    assert isinstance(body, bytes), "body must be bytes"
+    packet = bytearray(len(body) + 3)
+    packet[0:] = body
+    # Add CRC16 checksum (as uint16!)
+    packet[len(body):] = struct.pack('<H', crc16(body))
+    # Add terminator byte
+    packet[-1:] = b'\x7F'
+    return bytes(packet)
+
+
 def validate_message(payload, ignore_crc=False):
     if len(payload) < 0x20:
         raise RuntimeError("Invalid header length: %d" % len(payload))
@@ -378,8 +390,6 @@ def try_hello(comm):
             try:
                 validate_message(data, ignore_crc=True)
                 size = struct.unpack_from('<I', data, 0x14)[0]
-                # Assign received protocol version
-                comm.protocol_version = struct.unpack_from('<I', data, 0x4)[0]
                 comm.read(size, timeout=HELLO_READ_TIMEOUT)
             except RuntimeError: pass
             # Flush read buffer
@@ -387,6 +397,8 @@ def try_hello(comm):
             data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
         # Just to be sure, send another HELO request.
         comm.call(hello_request)
+    # Assign received protocol version
+    comm.protocol_version = struct.unpack_from('<I', data, 0x4)[0]
 
 def detect_serial_path():
     try:
