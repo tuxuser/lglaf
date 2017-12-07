@@ -495,6 +495,14 @@ def main():
         for command in get_commands(args.command):
             try:
                 payload = command_to_payload(command, args.rawshell)
+                # Dirty hack
+                if comm.protocol_version >= 0x1000004:
+                    if payload[0:4] == b'UNLK' or \
+                       payload[0:4] == b'OPEN' or \
+                       payload[0:4] == b'EXEC':
+                        challenge_response(comm, 2)
+                    elif payload[0:4] == b'CLSE':
+                        challenge_response(comm, 4)
                 header, response = comm.call(payload)
                 # For debugging, print header
                 if command[0] == '!':
