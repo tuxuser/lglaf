@@ -229,7 +229,14 @@ Arguments:
 XXX document this
 
 ### KILO
-Challenge/response to authenticate for some commands.
+Challenge/response to authenticate for some commands, starting with
+protocol version `0x1000004`.
+
+Following modes are needed:
+
+*__OPEN, UNLK, EXEC__: Mode 2
+
+*__CLSE__: Mode 4
 
 Arguments:
  - arg1: `CENT` or `METR`
