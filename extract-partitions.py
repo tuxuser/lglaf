@@ -19,8 +19,6 @@ parser.add_argument("-d", "--outdir", default=".",
 parser.add_argument("--max-size", metavar="kbytes", type=int, default=65535,
         help="Maximum partition size to dump (in KiB) or 0 to dump all (default %(default)d)")
 parser.add_argument("--debug", action='store_true', help="Enable debug messages")
-parser.add_argument("--skip-hello", action="store_true",
-        help="Immediately send commands, skip HELO message")
 
 def dump_partitions(comm, disk_fd, outdir, max_size):
     diskinfo = partitions.get_partitions(comm, disk_fd)
@@ -59,8 +57,8 @@ def main():
 
     comm = lglaf.autodetect_device()
     with closing(comm):
-        if not args.skip_hello:
-            lglaf.try_hello(comm)
+        lglaf.try_hello(comm)
+        _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
 
         with partitions.laf_open_disk(comm) as disk_fd:
             _logger.debug("Opened fd %d for disk", disk_fd)

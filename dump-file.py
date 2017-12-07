@@ -98,6 +98,7 @@ def main():
     comm = lglaf.autodetect_device()
     with closing(comm):
         lglaf.try_hello(comm)
+        _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
 
         # Be careful: a too large read size will result in a hang while LAF
         # tries to read more data, requiring a reset.

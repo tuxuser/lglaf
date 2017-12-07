@@ -456,13 +456,6 @@ def command_to_payload(command, rawshell):
     return make_request(command, args, body)
 
 parser = argparse.ArgumentParser(description='LG LAF Download Mode utility')
-parser.add_argument("--skip-hello", action="store_true",
-        help="Immediately send commands, skip HELO message")
-parser.add_argument("--cr", action="store_true",
-        help="Do initial challenge response (KILO CENT/METR)")
-parser.add_argument('--rawshell', action="store_true",
-        help="Execute shell commands as-is, needed on recent devices. "
-             "CAUTION: stderr output is not redirected!")
 parser.add_argument("-c", "--command", help='Shell command to execute')
 parser.add_argument("--serial", metavar="PATH", dest="serial_path",
         help="Path to serial device (e.g. COM4).")
@@ -483,18 +476,13 @@ def main():
         comm = autodetect_device()
 
     with closing(comm):
-        if args.cr:
-            # Mode 2 seems standard, will maybe
-            # change in other protocol versions
-            _logger.debug("Doing KILO challenge response")
-            challenge_response(comm, mode=2)
-        if not args.skip_hello:
-            try_hello(comm)
-            _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
-            _logger.debug("Hello done, proceeding with commands")
+        try_hello(comm)
+        _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
+        _logger.debug("Hello done, proceeding with commands")
         for command in get_commands(args.command):
             try:
-                payload = command_to_payload(command, args.rawshell)
+                use_rawshell = (comm.protocol_version >= 0x1000004)
+                payload = command_to_payload(command, use_rawshell)
                 # Dirty hack
                 if comm.protocol_version >= 0x1000004:
                     if payload[0:4] == b'UNLK' or \
