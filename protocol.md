@@ -175,8 +175,9 @@ The maximum output size appears to be 0x800001 (`LAF_MAX_DATA_PAYLOAD`). Larger
 values result in an error. Output is read per byte, not very efficient for large
 output...
 
-On newer versions, this requires authentication via `KILO` command, and few
-commands are allowed.
+On newer versions (protocol >= 0x1000004), this requires authentication via `KILO`
+command, and only few commands are allowed:
+- dmesg, umount, fota, gota, ls, mkdir, getenforce, ps, grep.
 
 ### INFO
 Arguments:
