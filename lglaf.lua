@@ -6,6 +6,7 @@
 --
 -- Alternatively start with: wireshark -X lua_script:path/to/lglaf.lua
 
+
 local lglaf = Proto("lglaf", "LG LAF")
 
 local usb_transfer_type = Field.new("usb.transfer_type")
@@ -49,8 +50,24 @@ function lglaf.dissector(tvb, pinfo, tree)
     pinfo.cols.protocol = lglaf.name
 
     local lglaf_tree = tree:add(lglaf, tvb())
-    if tvb(0, 4):le_uint() ~= bit.bnot(tvb(0x1c, 4):le_uint()) then
+    
+    -- Check if AT command
+    if tvb(0, 2):string() == "AT" then
+        pinfo.cols.info:set("AT Command")
+        return
+    -- Check if proper LAF
+    elseif tvb:len() >= 0x20 and tvb(0, 4):le_uint() == bit.bnot(tvb(0x1c, 4):le_uint()) then
+        pinfo.cols.info:set("LAF")
+    else
         pinfo.cols.info:set("Continuation")
+        if tvb:len() < 3 then
+            return
+        end
+        -- Check if it could be HDLC
+        if tvb(0, 1):uint() == 0xEF and tvb(-1):uint() == 0x7E then
+            -- To be sure CRC16 could be checked, it's too resource intense tho
+            pinfo.cols.info:set("Likely HDLC packet")
+        end
         return
     end
 
@@ -84,7 +101,16 @@ function lglaf.dissector(tvb, pinfo, tree)
     -- TODO desegmentation support
     local body_len = v_len:le_uint()
     if body_len > 0 then
-        local body_tvb = tvb(next_offset, body_len)
+        local body_tvb
+        if (body_len - next_offset) > tvb(next_offset):len() then
+            -- WRTE LAF packets give FULL length in header
+            -- not only current payload length
+            -- Workaround: Take what we get, not whats in the header
+            body_tvb = tvb(next_offset) 
+        else
+            body_tvb = tvb(next_offset, body_len)
+        end
+        
         lglaf_tree:add(lglaf.fields.body, body_tvb)
         lglaf_tree:add(lglaf.fields.body_str, body_tvb)
 
