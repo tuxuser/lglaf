@@ -16,14 +16,19 @@ if not success then
     usb_endpoint = Field.new("usb.endpoint_address")
 end
 
+-- Main command header field
 lglaf.fields.cmd = ProtoField.string("lglaf.command", "Command")
+lglaf.fields.subcmd = ProtoField.string("lglaf.subcommand", "Subcommand")
+-- Unknown / Unspecified header fields
 lglaf.fields.arg1 = ProtoField.uint32("lglaf.arg1", "Argument 1", base.HEX_DEC)
 lglaf.fields.arg2 = ProtoField.uint32("lglaf.arg2", "Argument 2", base.HEX_DEC)
 lglaf.fields.arg3 = ProtoField.uint32("lglaf.arg3", "Argument 3", base.HEX_DEC)
 lglaf.fields.arg4 = ProtoField.uint32("lglaf.arg4", "Argument 4", base.HEX_DEC)
+-- Static header fields
 lglaf.fields.len = ProtoField.uint32("lglaf.len", "Body length")
 lglaf.fields.crc = ProtoField.uint32("lglaf.crc", "CRC", base.HEX)
 lglaf.fields.cmd_inv = ProtoField.bytes("lglaf.command_inv", "Command (inverted)")
+-- Unspecified header field
 lglaf.fields.body = ProtoField.bytes("lglaf.body", "Body")
 lglaf.fields.body_str = ProtoField.string("lglaf.body_str", "Body (text)")
 
@@ -78,8 +83,10 @@ function lglaf.dissector(tvb, pinfo, tree)
         lglaf_tree:add_le(field, field_tvb)
         return field_tvb
     end
+    -- This is always a string
     add_dword(lglaf.fields.cmd)
     local v_args = {
+        -- This can be a string
         add_dword(lglaf.fields.arg1),
         add_dword(lglaf.fields.arg2),
         add_dword(lglaf.fields.arg3),
@@ -89,12 +96,21 @@ function lglaf.dissector(tvb, pinfo, tree)
     add_dword(lglaf.fields.crc)
     add_dword(lglaf.fields.cmd_inv)
 
-    pinfo.cols.info:set(tvb(0, 4):string() .. "(")
+    local cmd_string = tvb(0, 4):string()
+    local subcmd = ""
+    if cmd_string == "KILO" or cmd_string == "CTRL" or
+       cmd_string == "INFO" or cmd_string == "RSVD" or
+       cmd_string == "MISC" or cmd_string == "SNIF" or
+       cmd_string == "OPCM" or cmd_string == "FUSE" or
+       cmd_string == "CHCK" then
+        subcmd = tvb(4,4):string()
+    end
+    pinfo.cols.info:set(cmd_string .. " " .. subcmd .. "(")
     for i, arg in ipairs(v_args) do
         if i > 1 then
             pinfo.cols.info:append(",");
         end
-        pinfo.cols.info:append(arg:le_uint())
+        pinfo.cols.info:append(string.format("0x%x", arg:le_uint()))
     end
     pinfo.cols.info:append(")")
 
@@ -112,14 +128,17 @@ function lglaf.dissector(tvb, pinfo, tree)
         end
         
         lglaf_tree:add(lglaf.fields.body, body_tvb)
-        lglaf_tree:add(lglaf.fields.body_str, body_tvb)
 
-        local body_summary = body_tvb:string()
-        body_summary = string.gsub(body_summary, "\n", "\\n")
-        if #body_summary > 50 then
-            body_summary = string.sub(body_summary, 1, 80) .. "…"
+        if cmd_string ~= "OPEN" and cmd_string ~= "EXEC" then
+            -- Only those 2 commands contain a string in start of body
+            return
         end
-        pinfo.cols.info:append(" [" .. body_len ..  "] " .. body_summary)
+
+        local body_string = body_tvb:stringz()
+        local body_string_len = #body_string + 1;
+        lglaf_tree:add(lglaf.fields.body_str, body_tvb(0, body_string_len))
+
+        pinfo.cols.info:append(" [" .. body_string_len ..  "] " .. body_string)
     end
 end
 
