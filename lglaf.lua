@@ -26,11 +26,13 @@ SEEK_MODE = {
 }
 
 WRITE_TYPE = {
-    [0x00] = "WRITE_UNSPECIFIED",
-    [0x09] = "WRITE_CONTINUOUS",
-    [0x18] = "WRITE_START",
-    [0x29] = "WRITE_END",
-    [0x38] = "WRITE_SINGLE"
+    [0x00] = "WRITE_EMMC_CONTINUOUS",
+    [0x20] = "WRITE_EMMC_START",
+    
+    [0x09] = "WRITE_UFS_CONTINUOUS",
+    [0x18] = "WRITE_UFS_START",
+    [0x29] = "WRITE_UFS_END",
+    [0x38] = "WRITE_UFS_SINGLE"
 }
 
 -- OPEN
