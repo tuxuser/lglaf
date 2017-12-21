@@ -283,7 +283,7 @@ function lglaf.dissector(tvb, pinfo, tree)
             return
         end
         -- Check if it could be HDLC
-        if tvb(0, 1):uint() == 0xEF and tvb(-1):uint() == 0x7E then
+        if (tvb(0, 1):uint() == 0xEF or tvb(0, 1):uint() == 0x7E or tvb(0, 1):uint() == 0x02) and tvb(-1):uint() == 0x7E then
             -- To be sure CRC16 could be checked, it's too resource intense tho
             pinfo.cols.info:set("HDLC packet")
         end
