@@ -103,19 +103,10 @@ def laf_erase(comm, fd_num, sector_start, sector_count):
     # Ensure that response fd, start and count are sane (match the request)
     assert erase_cmd[4:4+12] == header[4:4+12], "Unexpected erase response"
 
-def laf_send_write_header(comm, fd_num, offset, data, mode=0, body_size=0):
-    """
-    This is just writing the header of a streaming transfer -
-    while neither expecting / reading a reply
-    """
-    #_logger.debug("WRTE(0x%05x, #%d)", offset, len(data)); return
-    write_cmd = lglaf.make_request(b'WRTE', args=[fd_num, offset, 0, mode], body=data, body_size=body_size)
-    comm.write(write_cmd)
-
-def laf_write(comm, fd_num, offset, data, mode=0, block_size=EMMC_BLOCKSZ, body_size=0):
+def laf_write(comm, fd_num, offset, data, mode=0, block_size=EMMC_BLOCKSZ):
     """Write size bytes at the given block offset."""
     #_logger.debug("WRTE(0x%05x, #%d)", offset, len(data)); return
-    write_cmd = lglaf.make_request(b'WRTE', args=[fd_num, offset, 0, mode], body=data, body_size=body_size)
+    write_cmd = lglaf.make_request(b'WRTE', args=[fd_num, offset, 0, mode], body=data)
     header = comm.call(write_cmd)[0]
     # Response offset (in bytes) must match calculated offset
     calc_offset = (offset * block_size) & 0xffffffff
@@ -246,20 +237,18 @@ def write_partition_stream_compressed(comm, disk_fd, local_path, part_offset, pa
             raise RuntimeError("Local file %i bytes reports length of 0!")
 
         written = 0
-        initial_writesize = MAX_LAF_PACKET_SIZE - LAF_HEADER_SIZE
         while written < length:
-            compressed_written = 0
             # Check needed write mode
             if length <= STREAMING_CHUNK_SZ:
                 mode = CompressedWrite.SINGLE
                 fileread_size = length
-            elif length - written <= STREAMING_CHUNK_SZ:
+            elif (length - written) <= STREAMING_CHUNK_SZ:
                 mode = CompressedWrite.END
                 fileread_size = length - written
-            elif length - written > STREAMING_CHUNK_SZ and written == 0:
+            elif (length - written) > STREAMING_CHUNK_SZ and written == 0:
                 mode = CompressedWrite.START
                 fileread_size = STREAMING_CHUNK_SZ
-            elif length - written > STREAMING_CHUNK_SZ:
+            elif (length - written) > STREAMING_CHUNK_SZ:
                 mode = CompressedWrite.INTERMEDIATE
                 fileread_size = STREAMING_CHUNK_SZ
             else:
@@ -268,15 +257,20 @@ def write_partition_stream_compressed(comm, disk_fd, local_path, part_offset, pa
             data = f.read(fileread_size)
             zdata = zlib.compress(data, 9)
 
-            laf_send_write_header(comm, disk_fd, write_offset // block_size, zdata[:initial_writesize],
-                                  mode, len(zdata))
-            compressed_written += initial_writesize
+            laf_data = lglaf.make_request(b'WRTE', args=[disk_fd, write_offset // block_size, 0, mode], body=zdata)
+            compressed_left = len(laf_data)
+            
+            writesize = min(compressed_left, MAX_LAF_PACKET_SIZE)
+            comm.write(laf_data[:writesize])
+            compressed_written = writesize
+            compressed_left -= writesize
 
-            while compressed_written < len(zdata):
+            while compressed_length > 0:
                 # Write pure data chunks, no LAF header
-                writesize = min(len(zdata) - compressed_written, MAX_LAF_PACKET_SIZE)
-                comm.write(zdata[compressed_written:compressed_written+writesize])
+                writesize = min(compressed_left, MAX_LAF_PACKET_SIZE)
+                comm.write(laf_data[compressed_written:compressed_written+writesize])
                 compressed_written += writesize
+                compressed_left -= writesize
 
             written += fileread_size
             write_offset += fileread_size
