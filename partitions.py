@@ -361,7 +361,7 @@ def main():
             elif args.restore:
                 write_partition(comm, disk_fd, args.restore, part_offset, part_size, block_size)
             elif args.restorefast:
-                write_partition_stream_compressed(comm, disk_fd, args.restore, part_offset, part_size, block_size)
+                write_partition_stream_compressed(comm, disk_fd, args.restorefast, part_offset, part_size, block_size)
             elif args.wipe:
                 wipe_partition(comm, disk_fd, part_offset, part_size, block_size)
 
