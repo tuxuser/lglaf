@@ -151,7 +151,7 @@ def invert_dword(dword_bin):
     dword = struct.unpack("I", dword_bin)[0]
     return struct.pack("I", dword ^ 0xffffffff)
 
-def make_request(cmd, args=[], body=b'', body_size=0):
+def make_request(cmd, args=[], body=b''):
     if not isinstance(cmd, bytes):
         cmd = cmd.encode('ascii')
     assert isinstance(body, bytes), "body must be bytes"
@@ -171,11 +171,7 @@ def make_request(cmd, args=[], body=b'', body_size=0):
         set_header(4 * (i + 1), arg)
 
     # 0x14: body length
-    if body_size:
-        # Overwriting bodysize
-        set_header(0x14, body_size)
-    else:
-        set_header(0x14, len(body))
+    set_header(0x14, len(body))
     # 0x1c: Inverted command
     set_header(0x1c, invert_dword(cmd))
     # Header finished (with CRC placeholder), append body...
