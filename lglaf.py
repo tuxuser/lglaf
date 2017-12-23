@@ -364,6 +364,29 @@ class Lglaf(object):
     def make_kilo_request(self, subcmd, mode=0, body=b''):
         return Lglaf.make_request(b'KILO', args=[subcmd, 0, mode, 0], body=body)
 
+    def make_open_request(self, filepath, body=b''):
+        """
+        Open requests for UFS have a yet unknown body
+        """
+        if isinstance(filepath, str):
+            filepath = filepath.encode('ascii')
+        if filepath[-1] != '\0':
+            filepath += '\0'
+        filepath += body
+        return Lglaf.make_request(b'OPEN', body=filepath)
+
+    def make_read_request(self, fd_num, offset, size):
+        return Lglaf.make_request(b'READ', args=[fd_num, offset, size])
+
+    def make_write_request(self, fd_num, offset, data, mode=0):
+        return Lglaf.make_request(b'WRTE', args=[fd_num, offset, 0, mode], body=data)
+
+    def make_erase_request(self, fd_num, sector_start, sector_count):
+        return Lglaf.make_request(b'ERSE', args=[fd_num, sector_start, sector_count])
+
+    def make_close_request(self, fd_num):
+        return Lglaf.make_request(b'CLSE', args=[fd_num])
+
     def try_hello(self):
         """
         Tests whether the device speaks the expected protocol. If desynchronization

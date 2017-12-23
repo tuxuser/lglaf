@@ -313,6 +313,7 @@ parser.add_argument("--wipe", action='store_true',
 parser.add_argument("partition", nargs='?',
         help="Partition number (e.g. 1 for block device mmcblk0p1)"
         " or partition name (e.g. 'recovery')")
+
 parser.add_argument("--skip-hello", action="store_true",
         help="Immediately send commands, skip HELO message")
 parser.add_argument("--ufs", action="store_true",
