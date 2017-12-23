@@ -7,7 +7,9 @@
 
 from __future__ import print_function
 from contextlib import closing
-import argparse, logging, re, struct, sys, binascii
+import argparse, logging, struct, sys, binascii
+from utils import crc16, text_unescape
+from utils import invert_dword, parse_number_or_escape
 
 # Enhanced prompt with history
 try: import readline
@@ -20,26 +22,16 @@ try: import winreg
 except ImportError:
     try: import _winreg as winreg
     except ImportError: winreg = None
-
-_logger = logging.getLogger("LGLAF.py")
-
+# laf crypto for KILO challenge/response
+try:
+    from laf_crypto import LafCrypto
+except ImportError:
+    raise Exception("LAF Crypto failed to import!")
 # Python 2/3 compat
 try: input = raw_input
 except: pass
-if '\0' == b'\0': int_as_byte = chr
-else: int_as_byte = lambda x: bytes([x])
 
-# laf crypto for KILO challenge/response
-try:
-    import laf_crypto
-except ImportError:
-    _logger.warning("LAF Crypto failed to import!")
-    pass
-
-# Use Manufacturer key for KILO challenge/response
-USE_MFG_KEY = False
-# HELO command always sends BASE Protocol version
-BASE_PROTOCOL_VERSION = 0x1000001
+_logger = logging.getLogger("LGLAF.py")
 
 laf_error_codes = {
     0x80000000: "FAILED",
@@ -98,136 +90,14 @@ laf_error_codes = {
     0x80000409: "PRL_WRITE_FAIL",
 }
 
-
-_ESCAPE_PATTERN = re.compile(b'''\\\\(
-x[0-9a-fA-F]{2} |
-[0-7]{1,3} |
-.)''', re.VERBOSE)
-_ESCAPE_MAP = {
-    b'n': b'\n',
-    b'r': b'\r',
-    b't': b'\t',
-}
-_ESCAPED_CHARS = b'"\\\''
-def text_unescape(text):
-    """Converts a string with escape sequences to bytes."""
-    text_bin = text.encode("utf8")
-    def sub_char(m):
-        what = m.group(1)
-        if what[0:1] == b'x' and len(what) == 3:
-            return int_as_byte(int(what[1:], 16))
-        elif what[0:1] in b'01234567':
-            return int_as_byte(int(what, 8))
-        elif what in _ESCAPE_MAP:
-            return _ESCAPE_MAP[what]
-        elif what in _ESCAPED_CHARS:
-            return what
-        else:
-            raise RuntimeError('Unknown escape sequence \\%s' %
-                    what.decode('utf8'))
-    return re.sub(_ESCAPE_PATTERN, sub_char, text_bin)
-
-def parse_number_or_escape(text):
-    try:
-        return int(text, 0) if text else 0
-    except ValueError:
-        return text_unescape(text)
-
-### Protocol-related stuff
-
-def crc16(data):
-    """CRC-16-CCITT computation with LSB-first and inversion."""
-    crc = 0xffff
-    for byte in data:
-        crc ^= byte
-        for bits in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0x8408
-            else:
-                crc >>= 1
-    return crc ^ 0xffff
-
-def invert_dword(dword_bin):
-    dword = struct.unpack("I", dword_bin)[0]
-    return struct.pack("I", dword ^ 0xffffffff)
-
-def make_request(cmd, args=[], body=b''):
-    if not isinstance(cmd, bytes):
-        cmd = cmd.encode('ascii')
-    assert isinstance(body, bytes), "body must be bytes"
-
-    # Header: command, args, ... body size, header crc16, inverted command
-    header = bytearray(0x20)
-    def set_header(offset, val):
-        if isinstance(val, int):
-            val = struct.pack('<I', val)
-        assert len(val) == 4, "Header field requires a DWORD, got %s %r" % \
-                (type(val).__name__, val)
-        header[offset:offset+4] = val
-
-    set_header(0, cmd)
-    assert len(args) <= 4, "Header cannot have more than 4 arguments"
-    for i, arg in enumerate(args):
-        set_header(4 * (i + 1), arg)
-
-    # 0x14: body length
-    set_header(0x14, len(body))
-    # 0x1c: Inverted command
-    set_header(0x1c, invert_dword(cmd))
-    # Header finished (with CRC placeholder), append body...
-    header += body
-    # finish with CRC for header and body
-    set_header(0x18, crc16(header))
-    return bytes(header)
-
-
-def make_hdlc_request(body):
-    assert isinstance(body, bytes), "body must be bytes"
-    packet = bytearray(len(body) + 3)
-    packet[0:] = body
-    # Add CRC16 checksum (as uint16!)
-    packet[len(body):] = struct.pack('<H', crc16(body))
-    # Add terminator byte
-    packet[-1:] = b'\x7F'
-    return bytes(packet)
-
-
-def validate_message(payload, ignore_crc=False):
-    if len(payload) < 0x20:
-        raise RuntimeError("Invalid header length: %d" % len(payload))
-    if not ignore_crc:
-        crc = struct.unpack_from('<I', payload, 0x18)[0]
-        payload_before_crc = bytearray(payload)
-        payload_before_crc[0x18:0x18+4] = b'\0\0\0\0'
-        crc_exp = crc16(payload_before_crc)
-        if crc_exp != crc:
-            raise RuntimeError("Expected CRC %04x, found %04x" % (crc_exp, crc))
-    tail_exp = invert_dword(payload[0:4])
-    tail = payload[0x1c:0x1c+4]
-    if tail_exp != tail:
-        raise RuntimeError("Expected trailer %r, found %r" % (tail_exp, tail))
-
-def make_exec_request(shell_command, rawshell):
-    # Allow use of shell constructs such as piping and reports syntax errors
-    # such as unterminated quotes. Remaining limitation: repetitive spaces are
-    # still eaten.
-    # If rawshell is set, execute the command as it's provided
-    if rawshell:
-        argv = b''
-    else:
-        argv = b'sh -c eval\t"$*"</dev/null\t2>&1 -- '
-    argv += shell_command.encode('ascii')
-    if len(argv) > 255:
-        raise RuntimeError("Command length %d is larger than 255" % len(argv))
-    return make_request(b'EXEC', body=argv + b'\0')
-
-
 ### USB or serial port communication
+
 
 class Communication(object):
     def __init__(self):
         self.read_buffer = b''
         self.protocol_version = 0
+
     def read(self, n, timeout=None):
         """Reads exactly n bytes."""
         need = n - len(self.read_buffer)
@@ -239,21 +109,26 @@ class Communication(object):
             need -= len(buff)
         data, self.read_buffer = self.read_buffer[0:n], self.read_buffer[n:]
         return data
+
     def _read(self, n, timeout=None):
         """Try one read, possibly returning less or more than n bytes."""
         raise NotImplementedError
+
     def write(self, data):
         raise NotImplementedError
+
     def close(self):
         raise NotImplementedError
+
     def reset(self):
         self.read_buffer = b''
+
     def call(self, payload):
         """Sends a command and returns its response."""
-        validate_message(payload)
+        Lglaf.validate_message(payload)
         self.write(payload)
         header = self.read(0x20)
-        validate_message(header, ignore_crc=True)
+        Lglaf.validate_message(header, ignore_crc=True)
         cmd = header[0:4]
         size = struct.unpack_from('<I', header, 0x14)[0]
         # could validate CRC and inverted command here...
@@ -266,6 +141,7 @@ class Communication(object):
             raise RuntimeError("Unexpected response: %r" % header)
         return header, data
 
+
 class FileCommunication(Communication):
     def __init__(self, file_path):
         super(FileCommunication, self).__init__()
@@ -273,17 +149,22 @@ class FileCommunication(Communication):
             self.f = open(file_path, 'r+b', buffering=0)
         else:
             self.f = open(file_path, 'r+b')
+
     def _read(self, n, timeout=None):
         return self.f.read(n)
+
     def write(self, data):
         self.f.write(data)
+
     def close(self):
         self.f.close()
+
 
 class USBCommunication(Communication):
     VENDOR_ID_LG = 0x1004
     # Read timeout. Set to 0 to disable timeouts
     READ_TIMEOUT_MS = 60000
+
     def __init__(self):
         super(USBCommunication, self).__init__()
         # Match device using heuristics on the interface/endpoint descriptors,
@@ -311,11 +192,13 @@ class USBCommunication(Communication):
                 self._set_interface(intf)
         assert self.ep_in
         assert self.ep_out
+
     def _match_device(self, device):
         return any(
             usb.util.find_descriptor(cfg, custom_match=self._match_interface)
             for cfg in device
         )
+
     def _set_interface(self, intf):
         for ep in intf:
             ep_dir = usb.util.endpoint_direction(ep.bEndpointAddress)
@@ -325,6 +208,7 @@ class USBCommunication(Communication):
                 self.ep_out = ep.bEndpointAddress
         _logger.debug("Using endpoints %02x (IN), %02x (OUT)",
                 self.ep_in, self.ep_out)
+
     def _match_interface(self, intf):
         return intf.bInterfaceClass == 255 and \
             intf.bInterfaceSubClass == 255 and \
@@ -334,9 +218,11 @@ class USBCommunication(Communication):
                 usb.util.ENDPOINT_TYPE_BULK
             for ep in intf
         )
+
     def _match_configuration(self, config):
         return usb.util.find_descriptor(config,
                 custom_match=self._match_interface)
+
     def _read(self, n, timeout=None):
         if timeout is None:
             timeout = self.READ_TIMEOUT_MS
@@ -344,61 +230,201 @@ class USBCommunication(Communication):
         array = self.usbdev.read(self.ep_in, 2**14, timeout=timeout)
         try: return array.tobytes()
         except: return array.tostring()
+
     def write(self, data):
         # Reset read buffer for response
         if self.read_buffer:
             _logger.warn('non-empty read buffer %r', self.read_buffer)
             self.read_buffer = b''
         self.usbdev.write(self.ep_out, data)
+
     def close(self):
         usb.util.dispose_resources(self.usbdev)
 
-def challenge_response(comm, mode):
-    request_kilo = make_request(b'KILO', args=[b'CENT', b'\0\0\0\0', b'\0\0\0\0', b'\0\0\0\0'])
-    kilo_header, kilo_response = comm.call(request_kilo)
-    kilo_challenge = kilo_header[8:12]
-    _logger.debug("Challenge: %s" % binascii.hexlify(kilo_challenge))
-    if USE_MFG_KEY:
-        key = b'lgowvqnltpvtgogwswqn~n~mtjjjqxro'
-    else:
-        key = b'qndiakxxuiemdklseqid~a~niq,zjuxl'
-    kilo_response = laf_crypto.encrypt_kilo_challenge(key, kilo_challenge)
-    _logger.debug("Response: %s" % binascii.hexlify(kilo_response))
-    mode_bytes = struct.pack('<I', mode)
-    kilo_metr_request = make_request(b'KILO', args=[b'METR', b'\0\0\0\0', mode_bytes, b'\0\0\0\0'],
-                                     body=bytes(kilo_response))
-    metr_header, metr_response = comm.call(kilo_metr_request)
-    _logger.debug("KILO METR Response -> Header: %s, Body: %s" % (
-        binascii.hexlify(metr_header), binascii.hexlify(metr_response)))
 
-def try_hello(comm):
+class Lglaf(object):
     """
-    Tests whether the device speaks the expected protocol. If desynchronization
-    is detected, tries to read as much data as possible.
+    Protocol-related stuff
     """
+    # Use Manufacturer key for KILO challenge/response
+    USE_MFG_KEY = False
+    # HELO command always sends BASE Protocol version
+    BASE_PROTOCOL_VERSION = 0x1000001
     # Wait for at most 5 seconds for a response... it shouldn't take that long
     # and otherwise something is wrong.
     HELLO_READ_TIMEOUT = 5000
 
-    hello_proto_version = struct.pack("<I", BASE_PROTOCOL_VERSION)
-    hello_request = make_request(b'HELO', args=[hello_proto_version])
-    comm.write(hello_request)
-    data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
-    if data[0:4] != b'HELO':
-        # Unexpected response, maybe some stale data from a previous execution?
-        while data[0:4] != b'HELO':
-            try:
-                validate_message(data, ignore_crc=True)
-                size = struct.unpack_from('<I', data, 0x14)[0]
-                comm.read(size, timeout=HELLO_READ_TIMEOUT)
-            except RuntimeError: pass
-            # Flush read buffer
-            comm.reset()
-            data = comm.read(0x20, timeout=HELLO_READ_TIMEOUT)
-        # Just to be sure, send another HELO request.
-        comm.call(hello_request)
-    # Assign received protocol version
-    comm.protocol_version = struct.unpack_from('<I', data, 0x4)[0]
+    def __init__(self, serial_path=None, rawshell=False, need_cr=False, block_size=512):
+        assert block_size == 512 or block_size == 4096, "Invalid block size passed: %d" % block_size
+        if serial_path:
+            self._comm = FileCommunication(serial_path)
+        else:
+            self._comm = autodetect_device()
+        self._rawshell = rawshell
+        self._need_cr = need_cr
+        self._block_size = block_size
+        self._target_protocol_version = -1
+
+    @property
+    def comm(self):
+        return self._comm
+
+    @property
+    def block_size(self):
+        return self._block_size
+
+    @property
+    def target_protocol_version(self):
+        return self._target_protocol_version
+
+    @property
+    def need_cr(self):
+        return self._need_cr
+
+    @staticmethod
+    def make_request(cmd, args=[], body=b''):
+        if not isinstance(cmd, bytes):
+            cmd = cmd.encode('ascii')
+        assert isinstance(body, bytes), "body must be bytes"
+
+        # Header: command, args, ... body size, header crc16, inverted command
+        header = bytearray(0x20)
+
+        def set_header(offset, val):
+            if isinstance(val, int):
+                val = struct.pack('<I', val)
+            assert len(val) == 4, "Header field requires a DWORD, got %s %r" % \
+                    (type(val).__name__, val)
+            header[offset:offset+4] = val
+
+        set_header(0, cmd)
+        assert len(args) <= 4, "Header cannot have more than 4 arguments"
+        for i, arg in enumerate(args):
+            set_header(4 * (i + 1), arg)
+
+        # 0x14: body length
+        set_header(0x14, len(body))
+        # 0x1c: Inverted command
+        set_header(0x1c, invert_dword(cmd))
+        # Header finished (with CRC placeholder), append body...
+        header += body
+        # finish with CRC for header and body
+        set_header(0x18, crc16(header))
+        return bytes(header)
+
+
+    @staticmethod
+    def make_hdlc_request(body):
+        assert isinstance(body, bytes), "body must be bytes"
+        packet = bytearray(len(body) + 3)
+        packet[0:] = body
+        # Add CRC16 checksum (as uint16!)
+        packet[len(body):] = struct.pack('<H', crc16(body))
+        # Add terminator byte
+        packet[-1:] = b'\x7F'
+        return bytes(packet)
+
+
+    @staticmethod
+    def validate_message(payload, ignore_crc=False):
+        if len(payload) < 0x20:
+            raise RuntimeError("Invalid header length: %d" % len(payload))
+        if not ignore_crc:
+            crc = struct.unpack_from('<I', payload, 0x18)[0]
+            payload_before_crc = bytearray(payload)
+            payload_before_crc[0x18:0x18+4] = b'\0\0\0\0'
+            crc_exp = crc16(payload_before_crc)
+            if crc_exp != crc:
+                raise RuntimeError("Expected CRC %04x, found %04x" % (crc_exp, crc))
+        tail_exp = invert_dword(payload[0:4])
+        tail = payload[0x1c:0x1c+4]
+        if tail_exp != tail:
+            raise RuntimeError("Expected trailer %r, found %r" % (tail_exp, tail))
+
+    def make_exec_request(self, shell_command):
+        """
+        Allow use of shell constructs such as piping and reports syntax errors
+        such as unterminated quotes. Remaining limitation: repetitive spaces are
+        still eaten.
+        If rawshell is set, execute the command as it's provided
+        """
+        if self._rawshell:
+            argv = b''
+        else:
+            argv = b'sh -c eval\t"$*"</dev/null\t2>&1 -- '
+        argv += shell_command.encode('ascii')
+        if len(argv) > 255:
+            raise RuntimeError("Command length %d is larger than 255" % len(argv))
+        return Lglaf.make_request(b'EXEC', body=argv + b'\0')
+
+    def make_hello_request(self, protocol_version=BASE_PROTOCOL_VERSION, mode=1):
+        version_req = struct.pack("<I", protocol_version)
+        return Lglaf.make_request(b'HELO', args=[version_req, 0, 0, mode])
+
+    def make_kilo_request(self, subcmd, mode=0, body=b''):
+        return Lglaf.make_request(b'KILO', args=[subcmd, 0, mode, 0], body=body)
+
+    def try_hello(self):
+        """
+        Tests whether the device speaks the expected protocol. If desynchronization
+        is detected, tries to read as much data as possible.
+        """
+        hello_request = self.make_hello_request()
+        self._comm.write(hello_request)
+        data = self._comm.read(0x20, timeout=Lglaf.HELLO_READ_TIMEOUT)
+        if data[0:4] != b'HELO':
+            # Unexpected response, maybe some stale data from a previous execution?
+            while data[0:4] != b'HELO':
+                try:
+                    Lglaf.validate_message(data, ignore_crc=True)
+                    size = struct.unpack_from('<I', data, 0x14)[0]
+                    self._comm.read(size, timeout=Lglaf.HELLO_READ_TIMEOUT)
+                except RuntimeError:
+                    pass
+                # Flush read buffer
+                self._comm.reset()
+                data = self._comm.read(0x20, timeout=Lglaf.HELLO_READ_TIMEOUT)
+            # Just to be sure, send another HELO request.
+            self._comm.call(hello_request)
+        # Assign received protocol version
+        self._target_protocol_version = struct.unpack_from('<I', data, 0x4)[0]
+
+    def challenge_response(self, mode):
+        request_kilo = self.make_kilo_request(b'CENT')
+        kilo_header, kilo_response = self._comm.call(request_kilo)
+        kilo_challenge = kilo_header[8:12]
+        _logger.debug("Challenge: %s" % binascii.hexlify(kilo_challenge))
+
+        if self.USE_MFG_KEY:
+            key = b'lgowvqnltpvtgogwswqn~n~mtjjjqxro'
+        else:
+            key = b'qndiakxxuiemdklseqid~a~niq,zjuxl'
+        kilo_response = LafCrypto.encrypt_kilo_challenge(key, kilo_challenge)
+        _logger.debug("Response: %s" % binascii.hexlify(kilo_response))
+
+        kilo_metr_request = self.make_kilo_request(b'METR', mode, bytes(kilo_response))
+        metr_header, metr_response = self._comm.call(kilo_metr_request)
+        _logger.debug("KILO METR Response -> Header: %s, Body: %s" % (
+            binascii.hexlify(metr_header), binascii.hexlify(metr_response)))
+
+    def command_to_payload(self, command):
+        """
+        Handle '!' as special commands, treat others as shell command
+        
+        !command [arg1[,arg2[,arg3[,arg4]]]] [body]
+        args are treated as integers (decimal or hex)
+        body is treated as string (escape sequences are supported)
+        """
+        if command[0] != '!':
+            return self.make_exec_request(command)
+
+        command = command[1:]
+        command, args, body = (command.split(' ', 2) + ['', ''])[0:3]
+        command = text_unescape(command)
+        args = list(map(parse_number_or_escape, args.split(',') + [0, 0, 0]))[0:4]
+        body = text_unescape(body)
+        return self.make_request(command, args, body)
+
 
 def detect_serial_path():
     try:
@@ -413,6 +439,7 @@ def detect_serial_path():
     except OSError: pass
     return None
 
+
 def autodetect_device():
     if winreg is not None and 'usb.core' not in sys.modules:
         serial_path = detect_serial_path()
@@ -424,6 +451,7 @@ def autodetect_device():
         if 'usb.core' not in sys.modules:
             raise RuntimeError("Please install PyUSB for USB support")
         return USBCommunication()
+
 
 
 ### Interactive loop
@@ -453,22 +481,12 @@ def get_commands(command):
         if prompt:
             print("", file=sys.stderr)
 
-def command_to_payload(command, rawshell):
-    # Handle '!' as special commands, treat others as shell command
-    if command[0] != '!':
-        return make_exec_request(command, rawshell)
-    command = command[1:]
-    # !command [arg1[,arg2[,arg3[,arg4]]]] [body]
-    # args are treated as integers (decimal or hex)
-    # body is treated as string (escape sequences are supported)
-    command, args, body = (command.split(' ', 2) + ['', ''])[0:3]
-    command = text_unescape(command)
-    args = list(map(parse_number_or_escape, args.split(',') + [0, 0, 0]))[0:4]
-    body = text_unescape(body)
-    return make_request(command, args, body)
 
 parser = argparse.ArgumentParser(description='LG LAF Download Mode utility')
 parser.add_argument("-c", "--command", help='Shell command to execute')
+parser.add_argument("--rawshell", help='Execute commands as-is, no redirection for stderr')
+parser.add_argument("--cr", help='Device needs challenge/response')
+parser.add_argument("--ufs", help='Treat target device with UFS partitioning')
 parser.add_argument("--serial", metavar="PATH", dest="serial_path",
         help="Path to serial device (e.g. COM4).")
 parser.add_argument("--debug", action='store_true', help="Enable debug messages")
@@ -482,32 +500,28 @@ def main():
     try: stdout_bin = sys.stdout.buffer
     except: stdout_bin = sys.stdout
 
-    if args.serial_path:
-        comm = FileCommunication(args.serial_path)
-    else:
-        comm = autodetect_device()
+    block_size = 512 if not args.ufs else 4096
+    lglaf = Lglaf(args.serial_path, args.rawshell, args.cr, block_size)
 
-    with closing(comm):
-        try_hello(comm)
-        _logger.debug("Using Protocol version: 0x%x" % comm.protocol_version)
+    with closing(lglaf.comm):
+        lglaf.try_hello()
+        _logger.debug("Using Protocol version: 0x%x" % lglaf.target_protocol_version)
         _logger.debug("Hello done, proceeding with commands")
         for command in get_commands(args.command):
             try:
-                use_rawshell = (comm.protocol_version >= 0x1000004)
-                payload = command_to_payload(command, use_rawshell)
-                # Dirty hack
-                if comm.protocol_version >= 0x1000004:
-                    if payload[0:4] == b'UNLK' or \
-                       payload[0:4] == b'OPEN' or \
-                       payload[0:4] == b'EXEC':
-                        challenge_response(comm, 2)
+                payload = lglaf.command_to_payload(command)
+
+                if lglaf.need_cr:
+                    if payload[0:4] in [b'UNLK', b'OPEN', b'EXEC']:
+                        lglaf.challenge_response(2)
                     elif payload[0:4] == b'CLSE':
-                        challenge_response(comm, 4)
-                header, response = comm.call(payload)
+                        lglaf.challenge_response(4)
+                header, response = lglaf.comm.call(payload)
+
                 # For debugging, print header
                 if command[0] == '!':
                     _logger.debug('Header: %s',
-                            ' '.join(repr(header[i:i+4]).replace("\\x00", "\\0")
+                                  ' '.join(repr(header[i:i+4]).replace("\\x00", "\\0")
                         for i in range(0, len(header), 4)))
                 stdout_bin.write(response)
             except Exception as e:
